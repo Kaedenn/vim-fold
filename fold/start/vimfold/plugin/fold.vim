@@ -1,12 +1,12 @@
 " File: fold.vim
 " Author: Kaedenn (kaedenn AT gmail DOT com)
-" Version: 1.10
+" Version: 1.11
 "
 " The "Fold" plugin defines convenience functions to handle folding for
 " specific file types, with a default for all other file types.
 "
-" Type ,f to fold according to language-specific rules.
-" Type ,F to fold sections.
+" Type <leader>f to fold according to language-specific rules.
+" Type <leader>F to fold sections.
 "
 " Sections are regions between "{{{<nr>" and "<nr>}}}" where "<nr>" is a
 " number from 0-9. Sections shouldn't overlap but can be nested.
@@ -38,7 +38,7 @@
 "
 " Configuration:
 "   g:vimfold_disable       if defined, disable this entire plugin
-"   g:vimfold_no_map        disable mapping ,f and ,F
+"   g:vimfold_no_map        disable mapping <leader>f and <leader>F
 "   g:vimfold_line_enable   enable vim-fold lines
 "   g:vimfold_sec_open      section open string (default: "{{{")
 "   g:vimfold_sec_close     section close string (default: "}}}")
@@ -52,6 +52,15 @@
 "   Fold multi-line Python-style arrays/tuples/dicts:
 "   # vim-fold: \(\[\|(\|{\)$
 "   # vim-fold-set: \(\[\|(\|{\)$:
+"
+" New Fold Functions:
+"   To add your own fold function for a given filetype, define that function
+"   wherever you wish and add the following line:
+"     call VimFold_Register("the-filetype", "the-function-name")
+"   This line must execute after the vim-fold plugin is loaded.
+"
+"   For example, if you define MyObjCFoldFunc() for Objective-C, you would add
+"     call VimFold_Register("objc", "MyObjCFoldFunc")
 "
 " Caveats:
 "   vim-fold allows execution of arbitrary vim expressions. Therefore,
@@ -72,7 +81,7 @@
 "   1.7.1:
 "     Add g:vimfold_enable
 "   1.7.2:
-"     Fix bug with ,f and ,F not being mapped as expected
+"     Fix bug with <leader>f and <leader>F not being mapped as expected
 "   1.8:
 "     Re-add Perl folding, add Bash folding
 "   1.9:
@@ -84,12 +93,21 @@
 "     Add g:vimfold_disable
 "     Add g:vimfold_no_map
 "     Rename g:vimfold_enable to g:vimfold_line_enable
+"   1.11:
+"     Add support for Vue template files
+"     Add support for typescript scripts (using JavaScript logic)
+"     Add missing FoldApply calls
+"     Rewrite VimFold_CheckOpt to remove unnecessary for-loop
+"     Add VimFold_UnsetOpt
+"     Refine the public API to allow for custom fold functions
+"     Move support function calls outside of the type-specific functions
 "
 " ISSUES:
 "
-" (BUG?) Python: @decorate(arg) decorators break folding
-"
-" (ISSUE) Remove dangerous execute in vim-fold/vim-fold-set handling.
+" (ISSUE) Allow nested folding for parts of files instead of using %g
+" (BUG) Python: @decorate(arg) decorators break folding
+" (ISSUE) Vue: Apply JavaScript folding to <template> blocks
+" (ISSUE) Remove dangerous execute in vim-fold/vim-fold-set handling
 
 if exists("g:vimfold_disable")
   finish
@@ -107,12 +125,12 @@ endif
 
 " Return whether or not the given vim-fold option is set
 function! VimFold_CheckOpt(opt)
-  if !exists("b:fold_options") | return 0 | endif
-  for optstr in b:fold_options
-    if optstr == a:opt
+  if exists("b:fold_options")
+    let l:ipos = index(b:fold_options, a:opt)
+    if l:ipos >= 0
       return 1
     endif
-  endfor
+  endif
   return 0
 endfunction
 
@@ -120,7 +138,86 @@ endfunction
 function! VimFold_SetOpt(opt)
   if !exists("b:fold_options") | let b:fold_options = [] | endif
   call add(b:fold_options, a:opt)
+  call <SID>Debug('Set option %s', a:opt)
 endfunction
+
+" Unset a vim-fold option
+function! VimFold_UnsetOpt(opt)
+  if exists("b:fold_options")
+    let l:ipos = index(b:fold_options, a:opt)
+    if l:ipos >= 0
+      call remove(b:fold_options, l:ipos)
+    else
+      call <SID>Debug('Unset %s failed: option not set', a:opt)
+    endif
+  else
+    call <SID>Debug('Unset %s failed: b:fold_options not defined', a:opt)
+  endif
+endfunction
+
+" Apply the vim-fold patterns
+function! VimFold_FoldApply()
+  if <SID>Get_EnableFoldLine()
+    for l:fp in b:fold_patterns
+      call <SID>Debug('Executing fold pattern %s', l:fp)
+      " FIXME: Do this without execute
+      silent! execute ':g/' . l:fp . '/norm $zf%'
+    endfor
+  endif
+  if VimFold_CheckOpt("sections") == 1
+    call <SID>Debug('vimfold option "sections" set; folding sections')
+    call <SID>FoldSections()
+  endif
+endfunction
+
+" Set up folding
+function! VimFold_FoldBegin()
+  normal mz
+  set nowrapscan
+  if !exists("b:fold_options") | let b:fold_options = [] | endif
+  if !exists("b:fold_patterns") | let b:fold_patterns = [] | endif
+  call <SID>Debug("Beginning fold via %s", b:fold_function)
+endfunction
+
+" Clean up after folding
+function! VimFold_FoldEnd()
+  noh
+  normal 'z
+  set wrapscan
+  " For some reason syntax highlighting breaks on long files
+  if VimFold_CheckOpt("nosync") != 1
+    syn sync fromstart
+  endif
+endfunction
+
+" BEGIN IMPLEMENTATION DETAIL FUNCTIONS {{{0
+" These functions are considered implementation details and should only be
+" invoked if you know what you're doing.
+
+" <leader>f handler: call b:fold_function
+function! VimFold_DoFold()
+  call VimFold_FoldBegin()
+  if exists("b:fold_function")
+    call b:fold_function()
+  else
+    call <SID>FoldDefault()
+  endif
+  call VimFold_FoldApply()
+  call VimFold_FoldEnd()
+endfunction
+
+" <leader>F handler: fold all {{{<n> ... <n>}}} sections
+function! VimFold_DoFoldSections()
+  call VimFold_FoldBegin()
+  call <SID>FoldSections()
+  call VimFold_FoldEnd()
+endfunction
+
+" END IMPLEMENTATION DETAIL FUNCTIONS 0}}}
+
+" BEGIN PRIVATE FUNCTIONS {{{0
+" These functions are truly private. Submit a GitHub issue if you think they
+" should be accessible.
 
 " Return whether or not fold-line configuration is enabled
 function! <SID>Get_EnableFoldLine()
@@ -130,10 +227,10 @@ function! <SID>Get_EnableFoldLine()
   return 0
 endfunction
 
-" Display a debug message
-function! <SID>Debug(...)
+" Display a formatted debug message
+function! <SID>Debug(msg, ...)
   if VimFold_CheckOpt("debug") == 1
-    echo a:000
+    echo call(function('printf'), [a:msg] + a:000)
   endif
 endfunction
 
@@ -198,59 +295,37 @@ function! <SID>FoldScan()
   call setpos(".", l:oldpos)
 endfunction
 
-" Apply the vim-fold patterns
-function! <SID>FoldApply()
-  if <SID>Get_EnableFoldLine()
-    for l:fp in b:fold_patterns
-      call <SID>Debug('Executing fold pattern', l:fp)
-      " FIXME: Do this without execute
-      silent! execute ':g/' . l:fp . '/norm $zf%'
-    endfor
-  endif
-  if VimFold_CheckOpt("sections") == 1
-    call <SID>Debug('vimfold option "sections" set; folding sections')
-    call <SID>FoldSections()
+" Get the configured indent expression
+function! <SID>GetIndentString()
+  if &expandtab
+    return repeat(' ', &shiftwidth)
+  else
+    return '	'
   endif
 endfunction
 
-" Set up folding
-function! <SID>FoldBegin()
-  normal mz
-  set nowrapscan
-  if !exists("b:fold_options") | let b:fold_options = [] | endif
-  if !exists("b:fold_patterns") | let b:fold_patterns = [] | endif
-endfunction
+" BEGIN FILETYPE-SPECIFIC FOLD FUNCTIONS {{{1
 
-" Clean up after folding
-function! <SID>FoldEnd()
-  noh
-  normal 'z
-  set wrapscan
-  " For some reason syntax highlighting breaks on long files
-  if VimFold_CheckOpt("nosync") != 1
-    syn sync fromstart
-  endif
-endfunction
-
-" ,f action for Python files
+" <leader>f action for Python files
 function! <SID>FoldPython()
-  call <SID>FoldBegin()
+  " *my* most-common top-level keywords
+  let l:tlkeywords = ['def', 'class', 'if']
+  let l:tlpat = '\(' . join(l:tlkeywords, '\|') . '\|@\|#\)'
+  let l:kwpat = '\(' . join(l:tlkeywords, '\|') . '\)'
+  let l:istr = <SID>GetIndentString()
+  " functions
+  silent! execute ':%g/^'.l:istr.'\(def\) /norm zf/\zs\ze$\n[\n]\+\([^ ]\|'.l:istr.'[^ ]\)'
+  " top-level VAR = [, VAR = (, VAR = {
   silent! execute ':%g/^[A-Z].*[({\[]$/norm $zf%'
-  "silent! execute ':%g/^  \(def\) /norm zf/\zs\ze$\n[\n]\+\([^ ]\|  [^ ]\)'
-  "silent! execute ':%g/^    \(def\) /norm zf/\zs\ze$\n[\n]\+\([^ ]\|  [^ ]\)'
-  silent! execute ':%g/^\(def\|class\|if\) /norm zf/\zs\ze$\n[\n]\+[^ ]'
+  silent! execute ':%g/^'.l:kwpat.' /norm zf/\zs\ze$\n[\n]\+'.l:tlpat.''
   silent! execute ':%g/^[ 	]*[r]\?"""/norm zf/^[ 	]*"""\n\zs\ze\n'
   silent! execute ':%g/^[A-Z0-9_]\+ = [r]\?"""$/norm zf/^[ 	]*"""\n\zs\ze\n'
   silent! execute ":%g/^[ 	]*'''/norm zf/^[ 	]*'''\\n\\zs\\ze\\n"
   silent! execute ":%g/^[A-Z0-9_]\\+ = '''$/norm zf/^[ 	]*'''\\n\\zs\\ze\\n"
-  call <SID>FoldApply()
-  call <SID>FoldEnd()
 endfunction
 
-" ,f action for Perl files
+" <leader>f action for Perl files
 function! <SID>FoldPerl()
-  call <SID>FoldApply()
-  call <SID>FoldBegin()
   silent! %g/__END__/norm zfG
   silent! %g/^our .*($/norm $zf%
   silent! %g/^}/norm zf%
@@ -270,20 +345,21 @@ function! <SID>FoldPerl()
     endif
     let l:s = search("^=[a-z]", "W")
   endwhile
-  call <SID>FoldEnd()
 endfunction
 
-" ,f action for Java files (crude)
+" <leader>f action for Java files (crude)
 function! <SID>FoldJava()
-  call <SID>FoldBegin()
-  execute ':%g/^\s\+\(public\|protected\|private\) [^{]\+{[^}]*$/norm t{zf%'
-  call <SID>FoldApply()
-  call <SID>FoldEnd()
+  "execute ':%g/^\s\+\(public\|protected\|private\) [^{]\+{[^}]*$/norm t{zf%'
+  " multi-line comment blocks
+  execute ':%g/^\s*\/\*[ \t]*/norm zf/^\s*\*\/\s*$\n\zs\ze/'
+  " functions with { on next line
+  execute ':%g/^\s\+\(public\|protected\|private\) [A-Za-z].* [a-zA-Z_].[^(]\+(\(.*\))[ \t]*\n[ \t]*{/norm jt{zf%'
+  " functions with { on same-line
+  execute ':%g/^\s\+\(public\|protected\|private\) [A-Za-z].* [a-zA-Z_].[^(]\+(\(.*\))\([ \t]*\){/norm t{zf%'
 endfunction
 
-" ,f action for JavaScript files
-function! <SID>FoldJS()
-  call <SID>FoldBegin()
+" <leader>f action for JavaScript files
+function! <SID>FoldJavaScript()
   let l:comment = '\%( \/\* .* \*\/\)\?'
   " Order is very important here!
   " <2 spaces> function(arguments) {
@@ -294,6 +370,8 @@ function! <SID>FoldJS()
   silent! execute ':%g/^  \([sg]et\> \)\?\[[^\]]\+\]([^}]*) {[^}]*' . l:comment . '$/norm t{zf%'
   " <text>function<text>{
   silent! execute ':%g/^[(]\?function\>[^{]\+{' . l:comment . '$/norm t{zf%'
+  " export function<text>{
+  silent! execute ':%g/^\(export \)\?function\>[^{]\+{' . l:comment . '$/norm t{zf%'
   " <text> = function <text> {
   silent! execute ':%g/^[^ ]\+ = [(]\?function[^{]\+{' . l:comment . '$/norm t{zf%'
   " <text>(<text>?) => {
@@ -301,28 +379,40 @@ function! <SID>FoldJS()
   " <stuff>class <stuff?> {   (disabled)
   "execute ':%g/^.*\<class [^{]*{$/norm t{zf%'
   " (var|const|let) <stuff> {
-  silent! execute ':%g/^\(var\|const\|let\) [^{]\+ {[^}]*' . l:comment . '$/norm t{zf%'
+  silent! execute ':%g/^\(export \)\?\(var\|const\|let\) [^{]\+ {[^}]*' . l:comment . '$/norm t{zf%'
   " <stuff> = {
-  silent! execute ':%g/^[^ ]\+ = {' . l:comment . '$/norm t{zf%'
+  silent! execute ':%g/^\(export \)\?[^ ]\+ = {' . l:comment . '$/norm t{zf%'
   " <stuff> = {
-  silent! execute ':%g/^[^ ]\+ = \[' . l:comment . '$/norm t[zf%'
+  silent! execute ':%g/^\(export \)\?[^ ]\+ = \[' . l:comment . '$/norm t[zf%'
   " /** ... */ block comments
   silent! execute '%g/^[ ]*\/\*\*/norm zf/\*\/$/'
-  call <SID>FoldApply()
-  call <SID>FoldEnd()
 endfunction
 
-" ,f action for Markdown files
+" <leader>f action for typescript files
+function! <SID>FoldTypeScript()
+  " Note that the rules below for folding functions assume the parameters are
+  " all on a single line. Muti-line parameter lists don't work here.
+  call <SID>FoldJavaScript()
+  " object and array literals
+  silent! execute ':%g/^\(export \)\?const[ ]\+\w\+[ ]*=[ ]*{$/norm $zf%'
+  silent! execute ':%g/^\(export \)\?const[ ]\+\w\+[ ]*=[ ]*\[$/norm $zf%'
+  " special class functions (static functions, setters, and getters)
+  silent! execute ':%g/^[ ]\+\(static\|[sg]et\>\) \w.\+ {$/norm $zf%'
+  " class constructors
+  silent! execute ':%g/^[ ]\+constructor[ ]*([^)]*)[ ]*{$/norm $zf%'
+  " classes
+  silent! execute ':%g/^\(export \(default \)\?\)\?class[ ]\+\w\+[ ]\+[^{]*{$/norm $zf%'
+  " enums and interfaces
+  silent! execute ':%g/^\(export \)\?\(enum\|interface\) [^{]\+ {[^}]*$/norm t{zf%'
+endfunction
+
+" <leader>f action for Markdown files
 function! <SID>FoldMD()
-  call <SID>FoldBegin()
   execute ':g/^#/,/\v(\n^#)@=|%$/fold'
-  call <SID>FoldApply()
-  call <SID>FoldEnd()
 endfunction
 
-" ,f action for Vim files
+" <leader>f action for Vim files
 function! <SID>FoldVim()
-  call <SID>FoldBegin()
   call setpos(".", [bufnr("%"), 0, 0, 0])
   let l:s = search("^function[!]\\? ", "W")
   while l:s != 0
@@ -331,8 +421,6 @@ function! <SID>FoldVim()
     execute ":" l:ls "," l:le "fold"
     let l:s = search("^function[!]\\? ", "W")
   endwhile
-  call <SID>FoldApply()
-  call <SID>FoldEnd()
 endfunction
 
 " Helper function for PL/SQL folding
@@ -353,42 +441,44 @@ function! <SID>FoldPLSQL_Util(type_pat, name_pat, ...)
     endif
     let l:start = search(a:type_pat, 'W')
   endwhile
-  call <SID>Debug('Folded ' . l:count . ' items using T=' . a:type_pat . ', N=' . a:name_pat)
+  call <SID>Debug('Folded %d items using T=%s, N=%s', l:count, a:type_pat, a:name_pat)
 endfunction
 
-" ,f action for PL/SQL files
+" <leader>f action for PL/SQL files
 function! <SID>FoldPLSQL()
-  call <SID>FoldBegin()
   call <SID>FoldPLSQL_Util('^[ ]\+FUNCTION ', '^[ ]\+FUNCTION[ ]\+\zs\w\+\ze', 'O')
   call <SID>FoldPLSQL_Util('^[ ]\+PROCEDURE ', '^[ ]\+PROCEDURE[ ]\+\zs\w\+\ze', 'O')
   call <SID>FoldPLSQL_Util('\(^\|[ ]\+\)PACKAGE ', 'PACKAGE[ ]\+\zs[^ ]\+\ze\([ ]\+AUTHID .*\)\?\([ ]*[IA]S\)\?[ ]*$', 'O')
   call <SID>FoldPLSQL_Util('\(^\|[ ]\+\)PACKAGE BODY ', 'PACKAGE BODY[ ]\+\zs[^ ]\+\ze\([ ]*[IA]S\)\?[ ]*$', 'O')
-  call <SID>FoldApply()
-  call <SID>FoldEnd()
   norm zM
 endfunction
 
-" ,f action for Bash scripts (crude)
+" <leader>f action for Bash scripts (crude)
 function! <SID>FoldBash()
-  call <SID>FoldBegin()
   silent! g/^}/norm zf%
-  call <SID>FoldEnd()
 endfunction
 
-" ,f action for scarpet scripts (crude)
+" <leader>f action for scarpet scripts (crude)
 function! <SID>FoldScarpet()
-  call <SID>FoldBegin()
   " Fold first-column close-paren and close-brace if followed by a semicolon
   silent! g/^[)}];[ 	]*$/norm ^zf%
-  call <SID>FoldEnd()
 endfunction
+
+" <leader>f action for vue files (semi-crude)
+function! <SID>FoldVue()
+  silent! g/^<template/norm jzf/^<\/template>
+  silent! g/^<style/norm jzf/^<\/style>
+  silent! g/^<script/norm jzf/^<\/script>
+endfunction
+
+" END FILETYPE-SPECIFIC FOLD FUNCTIONS 1}}}
 
 " VimFold_FoldDefault implementation (crude)
 function! <SID>FoldDefault()
   silent! g/^}/norm zf%
 endfunction
 
-" VimFold_FoldSections implementation
+" VimFold_DoFoldSections implementation
 function! <SID>FoldSections()
   let l:sec_open = "{{{"
   let l:sec_close = "}}}"
@@ -412,52 +502,32 @@ function! <SID>FoldSections()
   normal zM
 endfunction
 
-" Default ,f action
-function! VimFold_FoldDefault()
-  call <SID>FoldBegin()
-  call <SID>FoldDefault()
-  call <SID>FoldEnd()
+" Map <LocalLeader>f and <LocalLeader>F
+function! <SID>MapKeys()
+  silent! nunmap <buffer> <LocalLeader>f
+  silent! nunmap <buffer> <LocalLeader>F
+  nnoremap <buffer> <LocalLeader>f :call VimFold_DoFold()<CR>
+  nnoremap <buffer> <LocalLeader>F :call VimFold_DoFoldSections()<CR>
+  au BufNewFile,BufRead * nnoremap <buffer> <LocalLeader>f :call VimFold_DoFold()<CR>
+  au BufNewFile,BufRead * nnoremap <buffer> <LocalLeader>F :call VimFold_DoFoldSections()<CR>
 endfunction
 
-" Fold all {{{<n> ... <n>}}} sections
-function! VimFold_FoldSections()
-  call <SID>FoldBegin()
-  call <SID>FoldSections()
-  call <SID>FoldEnd()
-endfunction
-
-" Call b:fold_function
-function! VimFold_Fold()
-  if exists("b:fold_function")
-    call b:fold_function()
-  else
-    call VimFold_FoldDefault()
-  endif
-endfunction
+" END PRIVATE FUNCTIONS 0}}}
 
 " Register a fold function
-function! <SID>Register(ftype, func)
+function! VimFold_Register(ftype, func)
   if !exists("g:vimfold_functions")
     let g:vimfold_functions = {}
   endif
   let g:vimfold_functions[a:ftype] = function(a:func)
 endfunction
 
-" Map <LocalLeader>f and <LocalLeader>F
-function! <SID>MapKeys()
-  silent! nunmap <buffer> <LocalLeader>f
-  silent! nunmap <buffer> <LocalLeader>F
-  nnoremap <buffer> <LocalLeader>f :call VimFold_Fold()<CR>
-  nnoremap <buffer> <LocalLeader>F :call VimFold_FoldSections()<CR>
-  au BufNewFile,BufRead * nnoremap <buffer> <LocalLeader>f :call VimFold_Fold()<CR>
-  au BufNewFile,BufRead * nnoremap <buffer> <LocalLeader>F :call VimFold_FoldSections()<CR>
-endfunction
-
 " Initialize vim-fold plugin
+" Call this if you need to reinitialize the plugin after, say, adding a custom
+" fold function for some new filetype or replacing an existing fold function.
 function! VimFold_Intialize()
   let l:ftype = &filetype
   if has_key(g:vimfold_functions, l:ftype)
-    echo "Binding function to filetype " . l:ftype
     let b:fold_function = g:vimfold_functions[l:ftype]
   endif
   let b:fold_patterns = []
@@ -466,18 +536,25 @@ function! VimFold_Intialize()
 endfunction
 
 let g:vimfold_functions = {}
-call <SID>Register("python", "<SID>FoldPython")
-call <SID>Register("java", "<SID>FoldJava")
-call <SID>Register("javascript", "<SID>FoldJS")
-call <SID>Register("markdown", "<SID>FoldMD")
-call <SID>Register("vim", "<SID>FoldVim")
-call <SID>Register("plsql", "<SID>FoldPLSQL")
-call <SID>Register("sh", "<SID>FoldBash")
-call <SID>Register("perl", "<SID>FoldPerl")
-call <SID>Register("scarpet", "<SID>FoldScarpet")
+call VimFold_Register("python", "<SID>FoldPython")
+call VimFold_Register("java", "<SID>FoldJava")
+call VimFold_Register("javascript", "<SID>FoldJavaScript")
+call VimFold_Register("typescript", "<SID>FoldTypeScript")
+call VimFold_Register("markdown", "<SID>FoldMD")
+call VimFold_Register("vim", "<SID>FoldVim")
+call VimFold_Register("plsql", "<SID>FoldPLSQL")
+call VimFold_Register("sh", "<SID>FoldBash")
+call VimFold_Register("perl", "<SID>FoldPerl")
+call VimFold_Register("scarpet", "<SID>FoldScarpet")
+call VimFold_Register("vue", "<SID>FoldVue")
+
+" To add your own fold function, define it wherever you wish and add
+" call VimFold_Register("filetype", "funcname")
+" Note: Be sure to invoke this *after* this plugin is loaded.
+
 if !exists("g:vimfold_no_map") | call <SID>MapKeys() | endif
 
 au FileType * call VimFold_Intialize()
 
 " vim-fold-opt-set: debug:
-
+" vim: set ts=2 sts=2 sw=2 et:
