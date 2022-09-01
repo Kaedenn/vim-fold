@@ -1,6 +1,6 @@
 " File: fold.vim
 " Author: Kaedenn (kaedenn AT gmail DOT com)
-" Version: 1.11
+" Version: 1.11.2
 "
 " The "Fold" plugin defines convenience functions to handle folding for
 " specific file types, with a default for all other file types.
@@ -101,12 +101,17 @@
 "     Add VimFold_UnsetOpt
 "     Refine the public API to allow for custom fold functions
 "     Move support function calls outside of the type-specific functions
+"   1.11.1:
+"     (Python) Adjust tlpat to terminate on [A-Z]
+"   1.11.2:
+"     Add some error handling to FoldBegin
 "
-" ISSUES:
+" PROBLEMS:
 "
+" (BUG) Python folding breaks with multi-line literals with no indentation
+"   workaround: textwrap.dedent(multi-line-doc-string)
+" (ISSUE) don't overwrite the 'z mark in FoldBegin/FoldEnd; use a variable
 " (ISSUE) Allow nested folding for parts of files instead of using %g
-" (BUG) Python: @decorate(arg) decorators break folding
-" (ISSUE) Vue: Apply JavaScript folding to <template> blocks
 " (ISSUE) Remove dangerous execute in vim-fold/vim-fold-set handling
 
 if exists("g:vimfold_disable")
@@ -172,11 +177,20 @@ endfunction
 
 " Set up folding
 function! VimFold_FoldBegin()
-  normal mz
-  set nowrapscan
-  if !exists("b:fold_options") | let b:fold_options = [] | endif
-  if !exists("b:fold_patterns") | let b:fold_patterns = [] | endif
-  call <SID>Debug("Beginning fold via %s", b:fold_function)
+  if &foldmethod == "indent"
+    echoe "can't operate with foldmethod set to indent"
+  else
+    " FIXME: use a variable instead of overwriting the 'z mark
+    normal mz
+    set nowrapscan
+    if !exists("b:fold_options") | let b:fold_options = [] | endif
+    if !exists("b:fold_patterns") | let b:fold_patterns = [] | endif
+    if !exists("b:fold_function")
+      echoe "no fold function defined"
+    else
+      call <SID>Debug("Beginning fold via %s", b:fold_function)
+    end
+  end
 endfunction
 
 " Clean up after folding
@@ -310,7 +324,7 @@ endfunction
 function! <SID>FoldPython()
   " *my* most-common top-level keywords
   let l:tlkeywords = ['def', 'class', 'if']
-  let l:tlpat = '\(' . join(l:tlkeywords, '\|') . '\|@\|#\)'
+  let l:tlpat = '\(' . join(l:tlkeywords, '\|') . '\|@\|#\|[A-Z]\)'
   let l:kwpat = '\(' . join(l:tlkeywords, '\|') . '\)'
   let l:istr = <SID>GetIndentString()
   " functions
@@ -382,7 +396,7 @@ function! <SID>FoldJavaScript()
   silent! execute ':%g/^\(export \)\?\(var\|const\|let\) [^{]\+ {[^}]*' . l:comment . '$/norm t{zf%'
   " <stuff> = {
   silent! execute ':%g/^\(export \)\?[^ ]\+ = {' . l:comment . '$/norm t{zf%'
-  " <stuff> = {
+  " <stuff> = [
   silent! execute ':%g/^\(export \)\?[^ ]\+ = \[' . l:comment . '$/norm t[zf%'
   " /** ... */ block comments
   silent! execute '%g/^[ ]*\/\*\*/norm zf/\*\/$/'
