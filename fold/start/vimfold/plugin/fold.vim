@@ -1,6 +1,6 @@
 " File: fold.vim
 " Author: Kaedenn (kaedenn AT gmail DOT com)
-" Version: 1.11.2
+" Version: 1.12
 "
 " The "Fold" plugin defines convenience functions to handle folding for
 " specific file types, with a default for all other file types.
@@ -42,6 +42,7 @@
 "   g:vimfold_line_enable   enable vim-fold lines
 "   g:vimfold_sec_open      section open string (default: "{{{")
 "   g:vimfold_sec_close     section close string (default: "}}}")
+"   g:vimfold_max_indent    (Lua) how deep should we fold?
 " The vimfold_line_enable variables are dangerous. See Caveats below.
 "
 " Examples:
@@ -105,6 +106,11 @@
 "     (Python) Adjust tlpat to terminate on [A-Z]
 "   1.11.2:
 "     Add some error handling to FoldBegin
+"   1.11.3:
+"     Fix bug in GetIndent; "expandtabs" logic was backwards
+"   1.12:
+"     Add Lua, XML (crude)
+"     Add g:vimfild_max_indent for Lua
 "
 " PROBLEMS:
 "
@@ -127,6 +133,20 @@ let g:vimfoldoptset_pattern = '^[^ ]*[ ]\+\(vim-fold-opt-set\):[ ]\+\(.*\):[^:]*
 if exists("g:vimfold_mapleader")
   let maplocalleader = g:vimfold_mapleader
 endif
+
+" For sloppy indentation-based folding, how deep should we go?
+if !exists("g:vimfold_max_indent")
+  let g:vimfold_max_indent = 4
+endif
+
+" Build the likely indentation string for count indents
+function! <SID>GetIndent(count)
+  let l:indent = repeat(" ", &shiftwidth)
+  if !&expandtab
+    let l:indent = "	"
+  end
+  return repeat(l:indent, a:count)
+endfunction
 
 " Return whether or not the given vim-fold option is set
 function! VimFold_CheckOpt(opt)
@@ -233,6 +253,21 @@ endfunction
 " These functions are truly private. Submit a GitHub issue if you think they
 " should be accessible.
 
+" Count the parentheses (or braces, or brackets) on the given line
+function! <SID>CountParens(line, syma='{', symb='}')
+  let bcount = 0
+  let i = 0
+  while i < strlen(a:line)
+    if a:line[i] == a:syma
+      let bcount += 1
+    elseif a:line[i] == a:symb
+      let bcount -= 1
+    endif
+    let i += 1
+  endwhile
+  return bcount
+endfunction
+
 " Return whether or not fold-line configuration is enabled
 function! <SID>Get_EnableFoldLine()
   if exists("g:vimfold_line_enable") && g:vimfold_line_enable == 1
@@ -316,6 +351,11 @@ function! <SID>GetIndentString()
   else
     return '	'
   endif
+endfunction
+
+" Go to the first byte of the file
+function! <SID>GoBOF()
+  call setpos(".", [bufnr("%"), 0, 0, 0])
 endfunction
 
 " BEGIN FILETYPE-SPECIFIC FOLD FUNCTIONS {{{1
@@ -485,6 +525,56 @@ function! <SID>FoldVue()
   silent! g/^<script/norm jzf/^<\/script>
 endfunction
 
+" <leader>f action for Lua scripts (crude)
+function! <SID>FoldLua()
+  " Invoke zE because we don't want to fold the same region more than once
+  norm zE
+  " multi-line comments
+  silent! %g/\[\[/norm zf%zo
+  " table literals and friends
+  silent! %g/=\s*{$/norm $zf%zo
+  silent! %g/({$/norm $zf%zo
+  silent! %g/^[ ]*{\([ ]*--.*\)\?$/norm t{zf%zo
+  " fold functions
+  let icount = g:vimfold_max_indent
+  while icount >= 0
+    let indent = '\(' . <SID>GetIndent(icount) . '\)'
+    let prefix = '\(local \)\?\([a-zA-Z0-9_]\+[ ]*=[ ]*\)\?'
+    let pattern = '^' . indent . prefix . 'function[ ]*\([ ]\+[^(]*\)\?([^)]*)\([ ]*--.*\)\?'
+    let endpat = '^' . indent . 'end\>[,]\?\n\zs\ze'
+    let fcommand = '%g/' . pattern . '/norm zf/' . endpat . '/'
+    silent! exec fcommand
+    let icount = icount - 1
+  endwhile
+  norm zM
+endfunction
+
+" <leader>f actions for XML files (crude)
+function! <SID>FoldXml()
+  let nfolds = 0
+  let pat = "^[ ]*<[A-Za-z0-9_][A-Za-z0-9_]*\\>"
+  let pos = search(pat)
+  while pos != 0
+    let line = getline(pos)
+    let line = substitute(line, "\\" . nr2char(13), "", "")
+    let nspaces = strlen(substitute(line, "[^ ].*", "", ""))
+    let xmltag = matchstr(line, "[^ <]\\+\\>")
+    if nspaces > 0
+      let end_pat = "^[ ]\\{" . nspaces . "\\}<\\/" . xmltag . ">"
+    else
+      let end_pat = "^<\\/" . xmltag . ">"
+    endif
+    let end_pos = search(end_pat, "nW")
+    if end_pos > pos
+      execute ":" . pos . "," . end_pos . "fold"
+      execute ":foldopen!"
+      let nfolds = nfolds + 1
+    endif
+    let pos = search(pat, "W")
+  endwhile
+  normal ggzM
+endfunction
+
 " END FILETYPE-SPECIFIC FOLD FUNCTIONS 1}}}
 
 " VimFold_FoldDefault implementation (crude)
@@ -561,6 +651,8 @@ call VimFold_Register("sh", "<SID>FoldBash")
 call VimFold_Register("perl", "<SID>FoldPerl")
 call VimFold_Register("scarpet", "<SID>FoldScarpet")
 call VimFold_Register("vue", "<SID>FoldVue")
+call VimFold_Register("lua", "<SID>FoldLua")
+call VimFold_Register("xml", "<SID>FoldXml")
 
 " To add your own fold function, define it wherever you wish and add
 " call VimFold_Register("filetype", "funcname")
