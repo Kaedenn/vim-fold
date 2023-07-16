@@ -1,6 +1,6 @@
 " File: fold.vim
 " Author: Kaedenn (kaedenn AT gmail DOT com)
-" Version: 1.12
+" Version: 1.12.1
 "
 " The "Fold" plugin defines convenience functions to handle folding for
 " specific file types, with a default for all other file types.
@@ -111,6 +111,8 @@
 "   1.12:
 "     Add Lua, XML (crude)
 "     Add g:vimfild_max_indent for Lua
+"   1.12.1:
+"     Remove default arguments from CountParens
 "
 " PROBLEMS:
 "
@@ -254,7 +256,7 @@ endfunction
 " should be accessible.
 
 " Count the parentheses (or braces, or brackets) on the given line
-function! <SID>CountParens(line, syma='{', symb='}')
+function! <SID>CountParens(line, syma, symb)
   let bcount = 0
   let i = 0
   while i < strlen(a:line)
