@@ -1,6 +1,6 @@
 " File: fold.vim
 " Author: Kaedenn (kaedenn AT gmail DOT com)
-" Version: 1.12.1
+" Version: 1.13
 "
 " The "Fold" plugin defines convenience functions to handle folding for
 " specific file types, with a default for all other file types.
@@ -113,6 +113,12 @@
 "     Add g:vimfild_max_indent for Lua
 "   1.12.1:
 "     Remove default arguments from CountParens
+"   1.13:
+"     Rewrite FoldPython's multi-line string literal handling to use the
+"     syntax region to determine when a literal ends. Note that this
+"     depends on having :syntax on.
+"     Remove the error in FoldBegin when b:fold_function is unset; this
+"     is what FoldDefault is for.
 "
 " PROBLEMS:
 "
@@ -199,19 +205,17 @@ endfunction
 
 " Set up folding
 function! VimFold_FoldBegin()
-  if &foldmethod == "indent"
-    echoe "can't operate with foldmethod set to indent"
-  else
+  if &foldmethod == "manual"
     " FIXME: use a variable instead of overwriting the 'z mark
     normal mz
     set nowrapscan
     if !exists("b:fold_options") | let b:fold_options = [] | endif
     if !exists("b:fold_patterns") | let b:fold_patterns = [] | endif
-    if !exists("b:fold_function")
-      echoe "no fold function defined"
-    else
+    if exists("b:fold_function")
       call <SID>Debug("Beginning fold via %s", b:fold_function)
     end
+  else
+    echoe "foldmethod must be manual, not " . &foldmethod
   end
 endfunction
 
@@ -300,6 +304,7 @@ function! <SID>RangeExec(ls, le, cmd)
     throw "argument error: le > EOF: " . a:le
   endif
 
+  call <SID>Debug("exec :%d,%d %s", a:ls, a:le, a:cmd)
   execute ":" a:ls "," a:le a:cmd
 endfunction
 
@@ -360,7 +365,59 @@ function! <SID>GoBOF()
   call setpos(".", [bufnr("%"), 0, 0, 0])
 endfunction
 
+" True if the given position has the given syntax region
+function! <SID>HasSyntaxRegionAt(region, line_nr, col_nr)
+  for id in synstack(a:line_nr, a:col_nr)
+    let l:name = synIDattr(id, "name")
+    if l:name == a:region
+      return 1
+    endif
+  endfor
+  return 0
+endfunction
+
+" True if the current line and column has the given syntax region
+function! <SID>HasSyntaxRegion(region)
+  return <SID>HasSyntaxRegionAt(a:region, line("."), col("."))
+endfunction
+
 " BEGIN FILETYPE-SPECIFIC FOLD FUNCTIONS {{{1
+
+" (private) fold the multiline string literal starting at line(".")
+function! <SID>FoldPython_String()
+  let l:start_line = line(".")
+  let l:line_count = line("$")
+  let l:line = l:start_line + 1
+  let l:end_line = l:line
+  let l:col = 1
+  while l:line < l:line_count
+    let l:length = strlen(getline(l:line))
+    if l:length == 0
+      let l:line = l:line + 1
+      let l:col = 1
+    elseif <SID>HasSyntaxRegionAt("pythonString", l:line, l:col)
+      let l:end_line = l:line
+      if l:col == 1
+        let l:col = l:length
+      else
+        let l:line = l:line + 1
+        let l:col = 1
+      endif
+    else
+      break
+    endif
+  endwhile
+  if l:line == l:line_count
+    echoe printf("unclosed pythonString at line %d", l:start_line)
+    return l:start_line
+  endif
+  if l:start_line + 1 == l:end_line
+    call <SID>Debug("Skipping single-line pythonString at %d", l:start_line)
+  else
+    call <SID>RangeExec(l:start_line, l:end_line, "fold")
+    call <SID>RangeExec(l:start_line, l:end_line, "foldopen")
+  endif
+endfunction
 
 " <leader>f action for Python files
 function! <SID>FoldPython()
@@ -369,15 +426,17 @@ function! <SID>FoldPython()
   let l:tlpat = '\(' . join(l:tlkeywords, '\|') . '\|@\|#\|[A-Z]\)'
   let l:kwpat = '\(' . join(l:tlkeywords, '\|') . '\)'
   let l:istr = <SID>GetIndentString()
+  " multi-line string literals
+  %g/^[ 	]*"""/call <SID>FoldPython_String()
   " functions
   silent! execute ':%g/^'.l:istr.'\(def\) /norm zf/\zs\ze$\n[\n]\+\([^ ]\|'.l:istr.'[^ ]\)'
   " top-level VAR = [, VAR = (, VAR = {
   silent! execute ':%g/^[A-Z].*[({\[]$/norm $zf%'
   silent! execute ':%g/^'.l:kwpat.' /norm zf/\zs\ze$\n[\n]\+'.l:tlpat.''
-  silent! execute ':%g/^[ 	]*[r]\?"""/norm zf/^[ 	]*"""\n\zs\ze\n'
-  silent! execute ':%g/^[A-Z0-9_]\+ = [r]\?"""$/norm zf/^[ 	]*"""\n\zs\ze\n'
-  silent! execute ":%g/^[ 	]*'''/norm zf/^[ 	]*'''\\n\\zs\\ze\\n"
-  silent! execute ":%g/^[A-Z0-9_]\\+ = '''$/norm zf/^[ 	]*'''\\n\\zs\\ze\\n"
+  "silent! execute ':%g/^[ 	]*[r]\?"""/norm zf/^[ 	]*"""\n\zs\ze\n'
+  "silent! execute ':%g/^[A-Z0-9_]\+ = [r]\?"""$/norm zf/^[ 	]*"""\n\zs\ze\n'
+  "silent! execute ":%g/^[ 	]*'''/norm zf/^[ 	]*'''\\n\\zs\\ze\\n"
+  "silent! execute ":%g/^[A-Z0-9_]\\+ = '''$/norm zf/^[ 	]*'''\\n\\zs\\ze\\n"
 endfunction
 
 " <leader>f action for Perl files
@@ -502,10 +561,15 @@ endfunction
 
 " <leader>f action for PL/SQL files
 function! <SID>FoldPLSQL()
-  call <SID>FoldPLSQL_Util('^[ ]\+FUNCTION ', '^[ ]\+FUNCTION[ ]\+\zs\w\+\ze', 'O')
-  call <SID>FoldPLSQL_Util('^[ ]\+PROCEDURE ', '^[ ]\+PROCEDURE[ ]\+\zs\w\+\ze', 'O')
+  let l:ignorecase = &ignorecase
+  set ignorecase
+  call <SID>FoldPLSQL_Util('^[ ]\+FUNCTION ', '^[ ]\+FUNCTION[ ]\+\zs[0-9A-Za-z_$]\+\ze', 'O')
+  call <SID>FoldPLSQL_Util('^[ ]\+PROCEDURE ', '^[ ]\+PROCEDURE[ ]\+\zs[0-9A-Za-z_$]\+\ze', 'O')
   call <SID>FoldPLSQL_Util('\(^\|[ ]\+\)PACKAGE ', 'PACKAGE[ ]\+\zs[^ ]\+\ze\([ ]\+AUTHID .*\)\?\([ ]*[IA]S\)\?[ ]*$', 'O')
   call <SID>FoldPLSQL_Util('\(^\|[ ]\+\)PACKAGE BODY ', 'PACKAGE BODY[ ]\+\zs[^ ]\+\ze\([ ]*[IA]S\)\?[ ]*$', 'O')
+  if l:ignorecase != &ignorecase
+    set noignorecase
+  endif
   norm zM
 endfunction
 
@@ -648,6 +712,7 @@ call VimFold_Register("javascript", "<SID>FoldJavaScript")
 call VimFold_Register("typescript", "<SID>FoldTypeScript")
 call VimFold_Register("markdown", "<SID>FoldMD")
 call VimFold_Register("vim", "<SID>FoldVim")
+call VimFold_Register("sql", "<SID>FoldPLSQL")
 call VimFold_Register("plsql", "<SID>FoldPLSQL")
 call VimFold_Register("sh", "<SID>FoldBash")
 call VimFold_Register("perl", "<SID>FoldPerl")
