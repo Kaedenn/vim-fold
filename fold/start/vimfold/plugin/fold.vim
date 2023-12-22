@@ -1,6 +1,6 @@
 " File: fold.vim
 " Author: Kaedenn (kaedenn AT gmail DOT com)
-" Version: 1.13
+" Version: 1.13.2
 "
 " The "Fold" plugin defines convenience functions to handle folding for
 " specific file types, with a default for all other file types.
@@ -119,6 +119,10 @@
 "     depends on having :syntax on.
 "     Remove the error in FoldBegin when b:fold_function is unset; this
 "     is what FoldDefault is for.
+"   1.13.1:
+"     Fix infinite loop in FoldPython_String(), support `VAR = """`
+"   1.31.2:
+"     Tweak FoldMD to preserve blank lines between regions
 "
 " PROBLEMS:
 "
@@ -397,7 +401,7 @@ function! <SID>FoldPython_String()
       let l:col = 1
     elseif <SID>HasSyntaxRegionAt("pythonString", l:line, l:col)
       let l:end_line = l:line
-      if l:col == 1
+      if l:col == 1 && l:col < l:length
         let l:col = l:length
       else
         let l:line = l:line + 1
@@ -426,8 +430,11 @@ function! <SID>FoldPython()
   let l:tlpat = '\(' . join(l:tlkeywords, '\|') . '\|@\|#\|[A-Z]\)'
   let l:kwpat = '\(' . join(l:tlkeywords, '\|') . '\)'
   let l:istr = <SID>GetIndentString()
-  " multi-line string literals
-  %g/^[ 	]*"""/call <SID>FoldPython_String()
+  " multi-line string literals `"""` and `VARIABLE = """`
+  silent! %g/^[ 	]*"""/call <SID>FoldPython_String()
+  silent! %g/^[ 	]*'''/call <SID>FoldPython_String()
+  silent! %g/^[a-zA-Z_][a-zA-Z0-9_]*[ ]*=[ ]*"""/call <SID>FoldPython_String()
+  silent! %g/^[a-zA-Z_][a-zA-Z0-9_]*[ ]*=[ ]*'''/call <SID>FoldPython_String()
   " functions
   silent! execute ':%g/^'.l:istr.'\(def\) /norm zf/\zs\ze$\n[\n]\+\([^ ]\|'.l:istr.'[^ ]\)'
   " top-level VAR = [, VAR = (, VAR = {
@@ -437,6 +444,7 @@ function! <SID>FoldPython()
   "silent! execute ':%g/^[A-Z0-9_]\+ = [r]\?"""$/norm zf/^[ 	]*"""\n\zs\ze\n'
   "silent! execute ":%g/^[ 	]*'''/norm zf/^[ 	]*'''\\n\\zs\\ze\\n"
   "silent! execute ":%g/^[A-Z0-9_]\\+ = '''$/norm zf/^[ 	]*'''\\n\\zs\\ze\\n"
+  norm zM
 endfunction
 
 " <leader>f action for Perl files
@@ -523,7 +531,8 @@ endfunction
 
 " <leader>f action for Markdown files
 function! <SID>FoldMD()
-  execute ':g/^#/,/\v(\n^#)@=|%$/fold'
+  "execute ':g/^#/,/\v(\n^#)@=|%$/fold'
+  execute '%g/^#[# ]/,/[\n]\+#[# ]\|\%$/fold'
 endfunction
 
 " <leader>f action for Vim files
